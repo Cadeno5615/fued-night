@@ -128,7 +128,6 @@ input,select{font-family:inherit}
 .pchip.offline{opacity:.5}
 .pchip.bot{background:linear-gradient(180deg,#5b2bc9,#2e1180)}
 .pchip.bot .av{background:#33e08b;font-size:18px}
-.pchip.troll{background:linear-gradient(180deg,#c4142e,#5c0712)}
 .bot-bar{display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap;margin:6px 0 4px}
 .bot-bar select{padding:9px 10px;border-radius:10px;background:#0b0533;color:#fff;border:2px solid #6a4fd8;font-size:16px;font-weight:800}
 .rp .tag.bot{background:#33e08b;color:#04220f}
@@ -291,6 +290,12 @@ input,select{font-family:inherit}
 .go-team .gt-score{font-family:var(--board);font-size:clamp(48px,12vw,90px);line-height:1}
 .go-team .gt-label{font-weight:800;letter-spacing:.2em;font-size:14px;color:var(--gold2)}
 .go-team .gt-players{color:var(--dim);font-weight:700;margin-top:6px;font-size:17px}
+.twist{margin:18px auto 6px;max-width:640px;padding:16px 18px;border-radius:22px;background:linear-gradient(180deg,#c4142e,#5c0712);border:3px solid #fff;box-shadow:0 0 50px rgba(255,42,61,.7);opacity:0;animation:twistIn .9s cubic-bezier(.2,1.6,.4,1) 2.6s forwards}
+.twist .tw-top{font-family:var(--display);letter-spacing:.15em;color:#ffe58a;font-size:clamp(16px,3.5vw,24px)}
+.twist .tw-main{font-family:var(--display);font-size:clamp(32px,9vw,64px);line-height:1.05;color:#fff;text-shadow:0 4px 0 #3a0008}
+.twist .tw-sub{font-family:var(--display);font-size:clamp(15px,3.4vw,24px);color:#fff}
+.twist .tw-sub span{font-family:var(--body);font-weight:700;font-size:16px;color:#ffd0d6}
+@keyframes twistIn{0%{opacity:0;transform:scale(.3) rotate(-8deg)}100%{opacity:1;transform:scale(1) rotate(0)}}
 .history{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:18px}
 .history .h{background:rgba(255,255,255,.07);border-radius:12px;padding:6px 12px;font-weight:700}
 .teams-reveal{width:min(860px,100%);text-align:center}
@@ -596,7 +601,7 @@ async function syncPresence() {
   if (!isHost() || !S || !P || busy || ['gameOver', 'closed'].includes(S.phase)) return;
   const changes = {};
   for (const p of S.players) {
-    const ms = P.seen[p.id]; const online = p.bot ? !!(SESSION.bots && SESSION.bots[p.id]) : (ms != null && ms < 15000);
+    const ms = P.seen[p.id]; const mine = !!(SESSION.bots && SESSION.bots[p.id]); const online = mine ? true : p.bot ? false : (ms != null && ms < 15000);
     if ((p.connected !== false) !== online) changes[p.id] = online;
   }
   if (Object.keys(changes).length) await act('presence', changes);
@@ -631,12 +636,13 @@ function resetRoundFields(s) {
 function finishGame(s) {
   s.phase = 'gameOver'; s.turn = null; s.submission = null;
   s.winner = s.scores[0] === s.scores[1] ? 'tie' : (s.scores[0] > s.scores[1] ? 0 : 1);
+  s.trollReveal = Object.keys((SESSION && SESSION.trolls) || {}).filter(id => pl(s, id));   // the big plot twist
   fx(s, 'gameover', { winner: s.winner });
 }
 const need = (cond, msg) => { if (!cond) throw new Error(msg); };
 
 const HOST = {
-  markBot(s, id, troll) { const p = pl(s, id); need(p, 'Bot not found yet'); p.bot = true; if (troll) p.troll = true; },
+  markBot(s, id) { const p = pl(s, id); need(p, 'Bot not found yet'); p.bot = true; },
   botSkill(s, lvl) { s.botSkill = lvl; },
   presence(s, changes) { for (const p of s.players) if (p.id in changes) p.connected = changes[p.id]; },
   kick(s, id) { need(s.phase === 'lobby', 'Only in the lobby'); s.players = s.players.filter(p => p.id !== id); },
@@ -742,7 +748,7 @@ const HOST = {
   newGame(s) {
     need(s.phase === 'gameOver', 'Finish the game first');
     s.players = s.players.filter(p => p.connected !== false).map(p => ({ ...p, team: null }));
-    s.phase = 'lobby'; s.round = 0; s.scores = [0, 0]; s.teams = [[], []]; s.history = []; s.winner = null; resetRoundFields(s); fx(s, 'lobby');
+    s.phase = 'lobby'; s.trollReveal = null; s.round = 0; s.scores = [0, 0]; s.teams = [[], []]; s.history = []; s.winner = null; resetRoundFields(s); fx(s, 'lobby');
   },
   close(s) { s.phase = 'closed'; fx(s, 'closed'); }
 };
@@ -800,14 +806,15 @@ function matchAnswer(guess) {
    BOTS (run on the host's device; they buzz and answer through the
    same server checks as real players — the host still judges)
    =================================================================== */
-const TROLL_NAMES = ['Know-It-All', 'Cheater McGee', 'Mr. Smarty Pants', 'The Troll', 'Big Brain Bob'];
+// the secret troll uses a normal-looking name so nobody suspects it
+const TROLL_NAMES = ['Jake', 'Emma', 'Tyler', 'Olivia', 'Ryan', 'Sophia', 'Josh', 'Mia', 'Ethan', 'Lily', 'Noah', 'Chloe', 'Mason', 'Ella'];
 const BOT_NAMES = ['Robo Rita', 'Beep Boop', 'Sir Botsalot', 'Chip', 'Glitch', 'Turbo Tina', 'Gizmo', 'Captain Circuit', 'Pixel Pete', 'Byte Size'];
 const BOT_SKILL = {
   // bots only get an idea once the last (key) word of the question is showing; react = how fast they buzz after that
   easy:   { react: [1500, 3000], think: [3000, 5500], correct: .40 },
   medium: { react: [800, 1800],  think: [2200, 4500], correct: .60 },
   hard:   { react: [300, 900],   think: [1500, 3200], correct: .82 },
-  troll:  { react: [150, 400],   think: [500, 1100],  correct: 1 }   // buzzes instantly, knows every answer
+  troll:  { react: [150, 400],   think: [2000, 4000], correct: 1 }   // buzzes instantly, knows every answer, 'types' like a human
 };
 const WRONG_GUESSES = ['Food', 'Money', 'Friends', 'Family', 'Water', 'Car', 'Phone', 'Sleep', 'Music', 'Shoes', 'School', 'Work', 'Clothes', 'Games', 'Pizza'];
 const rnd = ([a, b]) => a + Math.random() * (b - a);
@@ -820,21 +827,25 @@ async function addBot(troll) {
   const name = shuffle(troll ? TROLL_NAMES : BOT_NAMES).find(n => !taken.has(n.toLowerCase())) || ((troll ? 'Troll ' : 'Bot ') + Math.floor(100 + Math.random() * 900));
   try {
     const r = await API.rpc('ff_join', { p_code: SESSION.code, p_name: name });
-    SESSION.bots = SESSION.bots || {}; SESSION.bots[r.id] = r.token; saveSession();
+    SESSION.bots = SESSION.bots || {}; SESSION.bots[r.id] = r.token;
+    if (troll) { SESSION.trolls = SESSION.trolls || {}; SESSION.trolls[r.id] = true; }   // secret: only the host's device knows
+    saveSession();
     const room = await API.room(SESSION.code); if (room) applyState(room.state, room.version);
+    if (troll) return;                                   // stays looking like a normal player
     for (let t = 0; t < 50 && busy; t++) await new Promise(r2 => setTimeout(r2, 100));
-    await act('markBot', r.id, !!troll);
+    await act('markBot', r.id);
   } catch (e) { toast(e.message); }
 }
 function botTick() {
   if (!isHost() || !S || !SESSION.bots || !S.players) return;
   const s = S, baseSkill = BOT_SKILL[s.botSkill || 'medium'];
   for (const p of s.players) {
-    if (!p.bot) continue; const tok = SESSION.bots[p.id]; if (!tok) continue;
-    const skill = p.troll ? BOT_SKILL.troll : baseSkill;
+    const tok = SESSION.bots[p.id]; if (!tok) continue;
+    const isTroll = !!(SESSION.trolls && SESSION.trolls[p.id]);
+    const skill = isTroll ? BOT_SKILL.troll : baseSkill;
     if (s.phase === 'faceoff' && s.buzzer && s.buzzer.state === 'open' && (s.contestants || []).includes(p.id)) {
       const k = `b:${s.round}:${s.unlockSeq || 0}:${p.id}`;
-      if (!botDone.has(k) && (p.troll || qDone(s))) {          // trolls don't even wait for the question          // only buzz once the whole question (and its key word) is showing
+      if (!botDone.has(k) && (isTroll || qDone(s))) {          // trolls don't even wait for the question          // only buzz once the whole question (and its key word) is showing
         botDone.add(k);
         setTimeout(() => { if (S && S.phase === 'faceoff' && S.buzzer.state === 'open') API.rpc('ff_buzz', { p_code: SESSION.code, p_id: p.id, p_token: tok }).catch(() => {}); }, rnd(skill.react));
       }
@@ -865,6 +876,7 @@ async function botAnswer(id, tok, skill) {
     if (!text) for (let t = 0; t < 12; t++) { text = pick(WRONG_GUESSES); if (!said.has(text.toLowerCase()) && matchAnswer(text) < 0) break; }
   }
   (botSaid[s.round] || (botSaid[s.round] = new Set())).add(String(text).toLowerCase());
+  if (skill === BOT_SKILL.troll) text = String(text).toLowerCase();   // types like a real person
   try { await API.rpc('ff_submit', { p_code: SESSION.code, p_id: id, p_token: tok, p_text: text }); } catch (e) {}
 }
 
@@ -893,7 +905,7 @@ function renderLobby() {
     el.innerHTML = `<div class="card" style="margin:8vh auto;text-align:center"><h2>PARTY CLOSED</h2><p class="note">The host ended this party.</p><button class="btn block" data-act="exit">BACK TO HOME</button></div>`; return;
   }
   const n = S.players.length; const live = S.players.filter(p => p.connected !== false).length;
-  const chips = S.players.map(p => `<div class="pchip ${p.troll ? 'bot troll' : p.bot ? 'bot' : ''} ${p.connected === false ? 'offline' : ''} ${SESSION.id === p.id ? 'me' : ''}"><div class="av">${p.troll ? '😈' : p.bot ? '🤖' : esc(p.name[0].toUpperCase())}</div><div class="nm">${esc(p.name)}${p.connected === false ? ' 💤' : ''}</div>${isHost() ? `<button class="kick" data-act="kick" data-id="${p.id}" title="Remove">✕</button>` : ''}</div>`).join('');
+  const chips = S.players.map(p => `<div class="pchip ${p.bot ? 'bot' : ''} ${p.connected === false ? 'offline' : ''} ${SESSION.id === p.id ? 'me' : ''}"><div class="av">${p.bot ? '🤖' : esc(p.name[0].toUpperCase())}</div><div class="nm">${esc(p.name)}${p.connected === false ? ' 💤' : ''}</div>${isHost() ? `<button class="kick" data-act="kick" data-id="${p.id}" title="Remove">✕</button>` : ''}</div>`).join('');
   const empties = Array.from({ length: Math.max(0, 8 - n) }, () => `<div class="pchip empty">Open seat</div>`).join('');
   const invite = inviteLink();
   el.innerHTML = `
@@ -906,7 +918,7 @@ function renderLobby() {
     </div>
     <div class="player-grid">${chips}${empties}</div>
     ${isHost() ? `
-      <div class="bot-bar"><button class="btn small purple" data-act="add-bot" ${n >= 8 ? 'disabled' : ''}>🤖 ADD BOT</button><button class="btn small red" data-act="add-troll" ${n >= 8 ? 'disabled' : ''}>😈 ADD TROLL BOT</button>
+      <div class="bot-bar"><button class="btn small purple" data-act="add-bot" ${n >= 8 ? 'disabled' : ''}>🤖 ADD BOT</button><button class="btn small red" data-act="add-troll" ${n >= 8 ? 'disabled' : ''}>🤫 ADD SECRET TROLL</button>
         <label class="note">Bot skill <select data-change="bot-skill">${['easy', 'medium', 'hard'].map(l => `<option value="${l}" ${(S.botSkill || 'medium') === l ? 'selected' : ''}>${l[0].toUpperCase() + l.slice(1)}</option>`).join('')}</select></label></div>
       <button class="btn block ${live >= 2 ? 'pulse' : ''}" data-act="play" ${live >= 2 ? '' : 'disabled'} style="font-size:26px;padding:18px">▶ PLAY GAME</button>
       <p class="note" style="text-align:center">${live >= 2 ? `Hosted by ${esc(S.hostName)} · tap PLAY when everyone is in` : 'Waiting for at least 2 players to join…'}</p>`
@@ -1007,8 +1019,8 @@ function renderRosters() {
   const html = [0, 1].map(t => `<div class="roster ${TC[t]}"><h4>${TEAM[t]}</h4>${(s.teams[t] || []).map(id => {
     const p = pl(s, id); if (!p) return '';
     const isTurn = s.turn && s.turn.playerId === id; const isCont = s.phase === 'faceoff' && s.contestants.includes(id);
-    const tag = p.connected === false ? '<span class="tag off">OFFLINE</span>' : isTurn ? '<span class="tag">TURN</span>' : isCont ? '<span class="tag">BUZZER</span>' : p.troll ? '<span class="tag off" style="background:#ff2a3d;color:#fff">TROLL</span>' : p.bot ? '<span class="tag bot">BOT</span>' : '';
-    return `<div class="rp ${isTurn ? 'turn' : ''} ${id === SESSION.id ? 'me' : ''} ${p.connected === false ? 'off' : ''}"><span class="nm">${p.troll ? '😈 ' : p.bot ? '🤖 ' : ''}${esc(p.name)}</span>${tag}</div>`;
+    const tag = p.connected === false ? '<span class="tag off">OFFLINE</span>' : isTurn ? '<span class="tag">TURN</span>' : isCont ? '<span class="tag">BUZZER</span>' : p.bot ? '<span class="tag bot">BOT</span>' : '';
+    return `<div class="rp ${isTurn ? 'turn' : ''} ${id === SESSION.id ? 'me' : ''} ${p.connected === false ? 'off' : ''}"><span class="nm">${p.bot ? '🤖 ' : ''}${esc(p.name)}</span>${tag}</div>`;
   }).join('') || '<div class="note">No players</div>'}</div>`).join('');
   const el = $('#rosters'); if (el.dataset.k !== html) { el.dataset.k = html; el.innerHTML = html; }
 }
@@ -1160,6 +1172,7 @@ function renderOverlay() {
       <div class="go-title">GAME OVER</div>
       ${tie ? `<div class="trophy">🤝</div><div class="go-winner" style="color:var(--gold2)">TIE GAME!</div><div class="go-champs">BOTH TEAMS FINISH WITH ${s.scores[0]}</div>`
             : `<div class="trophy">🏆</div><div class="go-winner ${TC[w]}">${TEAM[w]} WINS!</div><div class="go-champs">CHAMPIONS OF ${esc(GAME_TITLE)}</div>`}
+      ${(s.trollReveal || []).length ? `<div class="twist"><div class="tw-top">🕵️ PLOT TWIST! 🕵️</div><div class="tw-main">${s.trollReveal.map(id => esc(pname(s, id)).toUpperCase()).join(' &amp; ')}</div><div class="tw-sub">${s.trollReveal.length > 1 ? 'were TROLL BOTS' : 'was a TROLL BOT'} the whole time 😈<br><span>Buzzed in before hearing the questions and knew every answer.</span></div></div>` : ''}
       <div class="go-teams">${team(0)}${team(1)}</div>
       <div class="history">${(s.history || []).map(h => `<div class="h">R${h.round}: ${TEAM[h.team]} +${h.points}</div>`).join('')}</div>
       ${isHost() ? `<button class="btn" data-act="new-game">🔁 PLAY AGAIN</button> <button class="btn ghost" data-act="exit-host">EXIT</button>` : `<button class="btn ghost" data-act="exit">LEAVE</button><p class="note">The host can start a new game with the same players.</p>`}
@@ -1192,8 +1205,7 @@ function handleFx() {
     case 'unlock': SFX.unlock(); break;
     case 'contestants': SFX.blip(); break;
     case 'buzz': SFX.buzz();
-      if ((pl(s, d.id) || {}).troll) { const w = s.question ? (s.question.words || []).length : 0; banner('😈 TROLL ALERT 😈', esc(d.name).toUpperCase(), w === 0 ? 'Buzzed in before the question even started!' : `Buzzed after ${w} word${w === 1 ? '' : 's'}… suspicious 🤨`, 'bad'); }
-      else banner('⚡ BUZZED IN FIRST ⚡', esc(d.name).toUpperCase(), TEAM[d.team] || '', TC[d.team]); if (navigator.vibrate) navigator.vibrate(200); break;
+      banner('⚡ BUZZED IN FIRST ⚡', esc(d.name).toUpperCase(), TEAM[d.team] || '', TC[d.team]); if (navigator.vibrate) navigator.vibrate(200); break;
     case 'pass': setTimeout(() => banner('MISSED!', 'OVER TO ' + esc(d.name).toUpperCase(), TEAM[d.team] || '', TC[d.team]), 1300); break;
     case 'rebuzz': if (!d.reset) setTimeout(() => banner('BOTH MISSED', 'BUZZ AGAIN!', 'Host will unlock the buzzers', 'bad'), 1300); break;
     case 'control': setTimeout(() => { SFX.fanfare(); banner('GOOD ANSWER!', `${TEAM[d.team]} CONTROLS THE BOARD`, '', TC[d.team]); }, 900); break;
@@ -1203,7 +1215,8 @@ function handleFx() {
     case 'stealFail': setTimeout(() => { SFX.fanfare(); banner('STEAL FAILED', `${TEAM[d.team]} KEEPS ${d.points}!`, '', TC[d.team]); }, 1500); break;
     case 'cleared': setTimeout(() => { SFX.win(); Confetti.burst(200); banner('CLEAN SWEEP!', `${TEAM[d.team]} CLEARS THE BOARD`, '+100 BONUS POINTS!', TC[d.team]); }, 900); break;
     case 'award': SFX.fanfare(); Confetti.burst(90); banner('POINTS AWARDED', `${TEAM[d.team]} +${d.points}`, '', TC[d.team]); break;
-    case 'gameover': if (d.winner === 'tie') { SFX.fanfare(); Confetti.rain(5000); } else { SFX.win(); Confetti.rain(9000); setTimeout(() => Confetti.burst(220), 600); } break;
+    case 'gameover': if ((s.trollReveal || []).length) setTimeout(() => { SFX.strike(); setTimeout(() => SFX.fanfare(), 600); }, 2600);
+      if (d.winner === 'tie') { SFX.fanfare(); Confetti.rain(5000); } else { SFX.win(); Confetti.rain(9000); setTimeout(() => Confetti.burst(220), 600); } break;
     case 'lobby': SFX.blip(); break;
     case 'closed': break;
   }
