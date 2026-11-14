@@ -269,6 +269,10 @@ input,select{font-family:inherit}
 @keyframes xIn{0%{transform:scale(3);opacity:0}15%{transform:scale(1);opacity:1}80%{transform:scale(1);opacity:1}100%{transform:scale(.8);opacity:0}}
 .toast{position:fixed;left:50%;bottom:max(24px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:80;background:#0b0533;border:2px solid var(--gold);color:#fff;font-weight:800;padding:12px 18px;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.6);max-width:92vw;text-align:center;animation:popIn .3s both}
 .net{position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:85;background:#b30014;color:#fff;font-weight:800;padding:6px 14px;border-radius:999px;font-size:15px}
+.modal-bg{position:fixed;inset:0;z-index:90;background:rgba(5,3,26,.75);display:flex;align-items:center;justify-content:center;padding:16px}
+.modal-bg .card{animation:popIn .3s cubic-bezier(.2,1.6,.4,1)}
+.modal-btns{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.pchip .edit{background:rgba(0,0,0,.35);color:#fff;border-radius:8px;width:28px;height:28px;font-size:13px;flex:none}
 #confetti{position:fixed;inset:0;pointer-events:none;z-index:70;width:100%;height:100%}
 
 /* ---------- teams reveal / game over ---------- */
@@ -388,6 +392,10 @@ input,select{font-family:inherit}
 <div id="overlay"></div>
 <div class="banner-layer" id="banner-layer"></div>
 <div class="strike-layer" id="strike-layer"></div>
+<div id="modal" class="modal-bg hidden"><div class="card"><h2>RENAME PLAYER</h2>
+  <label class="field"><span>New name</span><input id="rename-input" class="input" maxlength="16" autocomplete="off"></label>
+  <div class="modal-btns"><button class="btn ghost" data-act="rename-cancel">CANCEL</button><button class="btn" data-act="rename-save">SAVE</button></div>
+  <div class="err" id="rename-err"></div></div></div>
 <div id="toast-wrap"></div>
 <div id="net" class="net hidden">Reconnecting…</div>
 
@@ -645,6 +653,13 @@ const HOST = {
   markBot(s, id) { const p = pl(s, id); need(p, 'Bot not found yet'); p.bot = true; },
   botSkill(s, lvl) { s.botSkill = lvl; },
   presence(s, changes) { for (const p of s.players) if (p.id in changes) p.connected = changes[p.id]; },
+  rename(s, id, name) {
+    need(s.phase === 'lobby', 'You can rename players in the lobby');
+    name = String(name || '').replace(/\s+/g, ' ').trim().slice(0, 16);
+    need(name, 'Type a name'); const p = pl(s, id); need(p, 'That player left');
+    need(!s.players.some(o => o.id !== id && o.name.toLowerCase() === name.toLowerCase()), 'That name is taken');
+    p.name = name;
+  },
   kick(s, id) { need(s.phase === 'lobby', 'Only in the lobby'); s.players = s.players.filter(p => p.id !== id); },
   startGame(s) {
     need(s.phase === 'lobby', 'Game already started');
@@ -785,7 +800,10 @@ async function startRound() {
 }
 
 /* fuzzy match a guess to the hidden answers (helps the host judge) */
-function norm(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\b(the|a|an)\b/g, '').replace(/\s+/g, ' ').trim().replace(/(es|s)\b/g, ''); }
+function norm(t) { return String(t || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\b(the|a|an)\b/g, '').replace(/\s+/g, ' ').trim(); }
+// singular/plural-tolerant word compare: "boxes" = "box", "shoes" = "shoe", "berries" = "berry"
+function wForms(w) { const f = new Set([w]); if (w.length > 3) { f.add(w.replace(/s+$/, '')); f.add(w.replace(/es$/, '')); f.add(w.replace(/ies$/, 'y')); f.add(w + 's'); } return f; }
+function sameWords(a, b) { const A = a.split(' '), B = b.split(' '); if (A.length !== B.length) return false; return A.every((w, i) => { const fa = wForms(w), fb = wForms(B[i]); for (const x of fa) if (fb.has(x)) return true; return false; }); }
 function lev(a, b) { const m = []; for (let i = 0; i <= a.length; i++) { m[i] = [i]; for (let j = 1; j <= b.length; j++) m[i][j] = i ? Math.min(m[i - 1][j] + 1, m[i][j - 1] + 1, m[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)) : j; } return m[a.length][b.length]; }
 function matchAnswer(guess) {
   if (!P || !P.answers || !S || !S.question) return -1; const g = norm(guess); if (!g) return -1;
@@ -794,7 +812,7 @@ function matchAnswer(guess) {
     if (S.question.slots[i] && S.question.slots[i].revealed) return;
     const t = norm(a.text); let sc = 99;
     const lim = t.length <= 4 ? 0 : t.length <= 11 ? 1 : 2;
-    if (t === g) sc = 0;
+    if (t === g || sameWords(t, g)) sc = 0;
     else if (g.length >= 3 && t.length >= 3 && ((' ' + t + ' ').includes(' ' + g + ' ') || (' ' + g + ' ').includes(' ' + t + ' '))) sc = 1;
     else { const d = lev(t, g); if (d <= lim) sc = 1 + d; }
     if (sc < bestScore) { bestScore = sc; best = i; }
@@ -873,6 +891,8 @@ async function botAnswer(id, tok, skill) {
     const said = botSaid[s.round] || (botSaid[s.round] = new Set());
     const pool = shuffle((P.decoys && P.decoys.length ? P.decoys : []).filter(d => !said.has(d.toLowerCase()) && matchAnswer(d) < 0));
     text = pool[0];
+    // out of fresh wrong ideas? repeat something already on the board (a classic real-player mistake)
+    if (!text) { const onBoard = s.question.slots.map((x, i) => x.revealed ? P.answers[i].text : null).filter(x => x && !said.has(x.toLowerCase())); text = pick(onBoard); }
     if (!text) for (let t = 0; t < 12; t++) { text = pick(WRONG_GUESSES); if (!said.has(text.toLowerCase()) && matchAnswer(text) < 0) break; }
   }
   (botSaid[s.round] || (botSaid[s.round] = new Set())).add(String(text).toLowerCase());
@@ -905,7 +925,7 @@ function renderLobby() {
     el.innerHTML = `<div class="card" style="margin:8vh auto;text-align:center"><h2>PARTY CLOSED</h2><p class="note">The host ended this party.</p><button class="btn block" data-act="exit">BACK TO HOME</button></div>`; return;
   }
   const n = S.players.length; const live = S.players.filter(p => p.connected !== false).length;
-  const chips = S.players.map(p => `<div class="pchip ${p.bot ? 'bot' : ''} ${p.connected === false ? 'offline' : ''} ${SESSION.id === p.id ? 'me' : ''}"><div class="av">${p.bot ? '🤖' : esc(p.name[0].toUpperCase())}</div><div class="nm">${esc(p.name)}${p.connected === false ? ' 💤' : ''}</div>${isHost() ? `<button class="kick" data-act="kick" data-id="${p.id}" title="Remove">✕</button>` : ''}</div>`).join('');
+  const chips = S.players.map(p => `<div class="pchip ${p.bot ? 'bot' : ''} ${p.connected === false ? 'offline' : ''} ${SESSION.id === p.id ? 'me' : ''}"><div class="av">${p.bot ? '🤖' : esc(p.name[0].toUpperCase())}</div><div class="nm">${esc(p.name)}${p.connected === false ? ' 💤' : ''}</div>${isHost() ? `<button class="edit" data-act="rename" data-id="${p.id}" title="Rename">✏️</button><button class="kick" data-act="kick" data-id="${p.id}" title="Remove">✕</button>` : ''}</div>`).join('');
   const empties = Array.from({ length: Math.max(0, 8 - n) }, () => `<div class="pchip empty">Open seat</div>`).join('');
   const invite = inviteLink();
   el.innerHTML = `
@@ -1145,7 +1165,7 @@ function renderHostPanel() {
 
   const html = `
     <div class="hp-card"><div class="hp-title">🎛 HOST CONTROLS</div><div class="hp-status">${status}</div>
-      ${pend ? `<div class="guess-box" style="margin-top:12px"><div class="who">${esc(pend.name)} answered:</div><div class="what">“${esc(pend.text)}”</div>
+      ${pend ? `<div class="guess-box" style="margin-top:12px"><div class="who">${esc(pname(s, pend.playerId))} answered:</div><div class="what">“${esc(pend.text)}”</div>
         <div class="hintline">${match >= 0 ? `Looks like #${match + 1} ${esc(ans[match].text)} — it's selected. Tap REVEAL ANSWER if correct.` : 'No close match — choose an answer below or give a strike.'}</div></div>` : (s.submission ? '<div class="note" style="margin-top:8px">Loading answer…</div>' : '')}
       ${btns ? `<div class="hp-btns" style="margin-top:12px">${btns}</div>` : ''}
     </div>
@@ -1277,6 +1297,9 @@ document.addEventListener('click', async e => {
     }
     // ---------- host ----------
     case 'kick': return act('kick', b.dataset.id);
+    case 'rename': { renameId = b.dataset.id; const p = pl(S, renameId); if (!p) return; $('#rename-input').value = p.name; setErr('rename-err'); $('#modal').classList.remove('hidden'); setTimeout(() => $('#rename-input').select(), 50); break; }
+    case 'rename-cancel': $('#modal').classList.add('hidden'); renameId = null; break;
+    case 'rename-save': return saveRename();
     case 'add-bot': return withBtn(b, () => addBot(false));
     case 'add-troll': return withBtn(b, () => addBot(true));
     case 'play': return act('startGame');
@@ -1318,11 +1341,19 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     if (e.target.id === 'join-name' || e.target.id === 'join-code') $('[data-act="join"]').click();
     if (e.target.id === 'host-name') $('[data-act="create"]').click();
+    if (e.target.id === 'rename-input') saveRename();
   }
   if (e.code === 'Space' && !isHost() && $('#buzzer') && !$('#buzzer').disabled && document.activeElement.tagName !== 'INPUT') { e.preventDefault(); $('#buzzer').click(); }
 });
 $('#join-code').addEventListener('input', e => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z]/g, ''); });
 
+let renameId = null;
+async function saveRename() {
+  if (!renameId) return;
+  const name = $('#rename-input').value;
+  try { HOST.rename(clone(S), renameId, name); } catch (e) { return setErr('rename-err', e.message); }
+  if (await act('rename', renameId, name)) { $('#modal').classList.add('hidden'); renameId = null; }
+}
 async function leaveGame() {
   const sess = SESSION; stopLoops();
   try {
