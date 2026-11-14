@@ -644,7 +644,8 @@ function resetRoundFields(s) {
 function finishGame(s) {
   s.phase = 'gameOver'; s.turn = null; s.submission = null;
   s.winner = s.scores[0] === s.scores[1] ? 'tie' : (s.scores[0] > s.scores[1] ? 0 : 1);
-  s.trollReveal = Object.keys((SESSION && SESSION.trolls) || {}).filter(id => pl(s, id));   // the big plot twist
+  s.trollReveal = null;
+  s.secretReveal = s.players.filter(p => SESSION && secretKind(p.id)).map(p => ({ id: p.id, kind: secretKind(p.id) }));   // the big plot twist
   fx(s, 'gameover', { winner: s.winner });
 }
 const need = (cond, msg) => { if (!cond) throw new Error(msg); };
@@ -763,7 +764,7 @@ const HOST = {
   newGame(s) {
     need(s.phase === 'gameOver', 'Finish the game first');
     s.players = s.players.filter(p => p.connected !== false).map(p => ({ ...p, team: null }));
-    s.phase = 'lobby'; s.trollReveal = null; s.round = 0; s.scores = [0, 0]; s.teams = [[], []]; s.history = []; s.winner = null; resetRoundFields(s); fx(s, 'lobby');
+    s.phase = 'lobby'; s.trollReveal = null; s.secretReveal = null; s.round = 0; s.scores = [0, 0]; s.teams = [[], []]; s.history = []; s.winner = null; resetRoundFields(s); fx(s, 'lobby');
   },
   close(s) { s.phase = 'closed'; fx(s, 'closed'); }
 };
@@ -837,19 +838,21 @@ const BOT_SKILL = {
 const WRONG_GUESSES = ['Food', 'Money', 'Friends', 'Family', 'Water', 'Car', 'Phone', 'Sleep', 'Music', 'Shoes', 'School', 'Work', 'Clothes', 'Games', 'Pizza'];
 const rnd = ([a, b]) => a + Math.random() * (b - a);
 const botDone = new Set(), botSaid = {};
+function secretKind(id) { return (SESSION.undercover && SESSION.undercover[id]) || (SESSION.trolls && SESSION.trolls[id] ? 'troll' : null); }
 const qFrac = s => s.question && s.question.total ? (s.question.words || []).length / s.question.total : 1;
-async function addBot(troll) {
+async function addBot(kind) {   // kind: 'bot' (visible), 'troll' (secret, knows everything), 'secret' (secret, normal skill)
+  const troll = kind === 'troll', secret = kind === 'troll' || kind === 'secret';
   if (!S || S.phase !== 'lobby') return;
   if (S.players.length >= 8) return toast('Party is full (8/8)');
   const taken = new Set(S.players.map(p => p.name.toLowerCase()));
-  const name = shuffle(troll ? TROLL_NAMES : BOT_NAMES).find(n => !taken.has(n.toLowerCase())) || ((troll ? 'Troll ' : 'Bot ') + Math.floor(100 + Math.random() * 900));
+  const name = shuffle(secret ? TROLL_NAMES : BOT_NAMES).find(n => !taken.has(n.toLowerCase())) || ((troll ? 'Troll ' : 'Bot ') + Math.floor(100 + Math.random() * 900));
   try {
     const r = await API.rpc('ff_join', { p_code: SESSION.code, p_name: name });
     SESSION.bots = SESSION.bots || {}; SESSION.bots[r.id] = r.token;
-    if (troll) { SESSION.trolls = SESSION.trolls || {}; SESSION.trolls[r.id] = true; }   // secret: only the host's device knows
+    if (secret) { SESSION.undercover = SESSION.undercover || {}; SESSION.undercover[r.id] = troll ? 'troll' : (S.botSkill || 'medium'); }   // only the host's device knows
     saveSession();
     const room = await API.room(SESSION.code); if (room) applyState(room.state, room.version);
-    if (troll) return;                                   // stays looking like a normal player
+    if (secret) return;                                  // stays looking like a normal player
     for (let t = 0; t < 50 && busy; t++) await new Promise(r2 => setTimeout(r2, 100));
     await act('markBot', r.id);
   } catch (e) { toast(e.message); }
@@ -859,11 +862,11 @@ function botTick() {
   const s = S, baseSkill = BOT_SKILL[s.botSkill || 'medium'];
   for (const p of s.players) {
     const tok = SESSION.bots[p.id]; if (!tok) continue;
-    const isTroll = !!(SESSION.trolls && SESSION.trolls[p.id]);
-    const skill = isTroll ? BOT_SKILL.troll : baseSkill;
+    const sk = secretKind(p.id), isTroll = sk === 'troll';
+    const skill = sk ? BOT_SKILL[sk] : baseSkill;
     if (s.phase === 'faceoff' && s.buzzer && s.buzzer.state === 'open' && (s.contestants || []).includes(p.id)) {
       const k = `b:${s.round}:${s.unlockSeq || 0}:${p.id}`;
-      if (!botDone.has(k) && (isTroll || qDone(s))) {          // trolls don't even wait for the question          // only buzz once the whole question (and its key word) is showing
+      if (!botDone.has(k) && (isTroll || qDone(s))) {   // normal bots wait for the whole question; trolls don't
         botDone.add(k);
         setTimeout(() => { if (S && S.phase === 'faceoff' && S.buzzer.state === 'open') API.rpc('ff_buzz', { p_code: SESSION.code, p_id: p.id, p_token: tok }).catch(() => {}); }, rnd(skill.react));
       }
@@ -875,6 +878,7 @@ function botTick() {
   }
 }
 async function botAnswer(id, tok, skill) {
+  const undercover = !!secretKind(id);
   const s = S; if (!s || !(s.turn && s.turn.playerId === id && s.turn.open && !s.submission) || !P || !P.answers) return;
   const hidden = P.answers.map((a, i) => i).filter(i => s.question.slots[i] && !s.question.slots[i].revealed);
   let text;
@@ -896,7 +900,7 @@ async function botAnswer(id, tok, skill) {
     if (!text) for (let t = 0; t < 12; t++) { text = pick(WRONG_GUESSES); if (!said.has(text.toLowerCase()) && matchAnswer(text) < 0) break; }
   }
   (botSaid[s.round] || (botSaid[s.round] = new Set())).add(String(text).toLowerCase());
-  if (skill === BOT_SKILL.troll) text = String(text).toLowerCase();   // types like a real person
+  if (undercover) text = String(text).toLowerCase();   // secret bots type like a real person
   try { await API.rpc('ff_submit', { p_code: SESSION.code, p_id: id, p_token: tok, p_text: text }); } catch (e) {}
 }
 
@@ -938,7 +942,7 @@ function renderLobby() {
     </div>
     <div class="player-grid">${chips}${empties}</div>
     ${isHost() ? `
-      <div class="bot-bar"><button class="btn small purple" data-act="add-bot" ${n >= 8 ? 'disabled' : ''}>🤖 ADD BOT</button><button class="btn small red" data-act="add-troll" ${n >= 8 ? 'disabled' : ''}>🤫 ADD SECRET TROLL</button>
+      <div class="bot-bar"><button class="btn small purple" data-act="add-bot" ${n >= 8 ? 'disabled' : ''}>🤖 ADD BOT</button><button class="btn small blue" data-act="add-secret" ${n >= 8 ? 'disabled' : ''}>🕵️ ADD SECRET BOT</button><button class="btn small red" data-act="add-troll" ${n >= 8 ? 'disabled' : ''}>🤫 ADD SECRET TROLL</button>
         <label class="note">Bot skill <select data-change="bot-skill">${['easy', 'medium', 'hard'].map(l => `<option value="${l}" ${(S.botSkill || 'medium') === l ? 'selected' : ''}>${l[0].toUpperCase() + l.slice(1)}</option>`).join('')}</select></label></div>
       <button class="btn block ${live >= 2 ? 'pulse' : ''}" data-act="play" ${live >= 2 ? '' : 'disabled'} style="font-size:26px;padding:18px">▶ PLAY GAME</button>
       <p class="note" style="text-align:center">${live >= 2 ? `Hosted by ${esc(S.hostName)} · tap PLAY when everyone is in` : 'Waiting for at least 2 players to join…'}</p>`
@@ -1192,7 +1196,7 @@ function renderOverlay() {
       <div class="go-title">GAME OVER</div>
       ${tie ? `<div class="trophy">🤝</div><div class="go-winner" style="color:var(--gold2)">TIE GAME!</div><div class="go-champs">BOTH TEAMS FINISH WITH ${s.scores[0]}</div>`
             : `<div class="trophy">🏆</div><div class="go-winner ${TC[w]}">${TEAM[w]} WINS!</div><div class="go-champs">CHAMPIONS OF ${esc(GAME_TITLE)}</div>`}
-      ${(s.trollReveal || []).length ? `<div class="twist"><div class="tw-top">🕵️ PLOT TWIST! 🕵️</div><div class="tw-main">${s.trollReveal.map(id => esc(pname(s, id)).toUpperCase()).join(' &amp; ')}</div><div class="tw-sub">${s.trollReveal.length > 1 ? 'were TROLL BOTS' : 'was a TROLL BOT'} the whole time 😈<br><span>Buzzed in before hearing the questions and knew every answer.</span></div></div>` : ''}
+      ${(s.secretReveal || []).length ? `<div class="twist"><div class="tw-top">🕵️ PLOT TWIST! 🕵️</div>${s.secretReveal.map(r => `<div class="tw-main">${esc(pname(s, r.id)).toUpperCase()}</div><div class="tw-sub">${r.kind === 'troll' ? 'was a TROLL BOT the whole time 😈<br><span>Buzzed in before hearing the questions and knew every answer.</span>' : `was a BOT the whole time 🤖<br><span>Secret ${r.kind[0].toUpperCase() + r.kind.slice(1)} bot — did anyone notice?</span>`}</div>`).join('<div style="height:10px"></div>')}</div>` : ''}
       <div class="go-teams">${team(0)}${team(1)}</div>
       <div class="history">${(s.history || []).map(h => `<div class="h">R${h.round}: ${TEAM[h.team]} +${h.points}</div>`).join('')}</div>
       ${isHost() ? `<button class="btn" data-act="new-game">🔁 PLAY AGAIN</button> <button class="btn ghost" data-act="exit-host">EXIT</button>` : `<button class="btn ghost" data-act="exit">LEAVE</button><p class="note">The host can start a new game with the same players.</p>`}
@@ -1235,7 +1239,7 @@ function handleFx() {
     case 'stealFail': setTimeout(() => { SFX.fanfare(); banner('STEAL FAILED', `${TEAM[d.team]} KEEPS ${d.points}!`, '', TC[d.team]); }, 1500); break;
     case 'cleared': setTimeout(() => { SFX.win(); Confetti.burst(200); banner('CLEAN SWEEP!', `${TEAM[d.team]} CLEARS THE BOARD`, '+100 BONUS POINTS!', TC[d.team]); }, 900); break;
     case 'award': SFX.fanfare(); Confetti.burst(90); banner('POINTS AWARDED', `${TEAM[d.team]} +${d.points}`, '', TC[d.team]); break;
-    case 'gameover': if ((s.trollReveal || []).length) setTimeout(() => { SFX.strike(); setTimeout(() => SFX.fanfare(), 600); }, 2600);
+    case 'gameover': if ((s.secretReveal || []).length) setTimeout(() => { SFX.strike(); setTimeout(() => SFX.fanfare(), 600); }, 2600);
       if (d.winner === 'tie') { SFX.fanfare(); Confetti.rain(5000); } else { SFX.win(); Confetti.rain(9000); setTimeout(() => Confetti.burst(220), 600); } break;
     case 'lobby': SFX.blip(); break;
     case 'closed': break;
@@ -1300,8 +1304,9 @@ document.addEventListener('click', async e => {
     case 'rename': { renameId = b.dataset.id; const p = pl(S, renameId); if (!p) return; $('#rename-input').value = p.name; setErr('rename-err'); $('#modal').classList.remove('hidden'); setTimeout(() => $('#rename-input').select(), 50); break; }
     case 'rename-cancel': $('#modal').classList.add('hidden'); renameId = null; break;
     case 'rename-save': return saveRename();
-    case 'add-bot': return withBtn(b, () => addBot(false));
-    case 'add-troll': return withBtn(b, () => addBot(true));
+    case 'add-bot': return withBtn(b, () => addBot('bot'));
+    case 'add-secret': return withBtn(b, () => addBot('secret'));
+    case 'add-troll': return withBtn(b, () => addBot('troll'));
     case 'play': return act('startGame');
     case 'reshuffle': return act('reshuffle');
     case 'start-round': return startRound();
