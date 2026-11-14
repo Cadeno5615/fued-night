@@ -328,7 +328,7 @@ input,select{font-family:inherit}
       <button class="choice" data-act="go-host"><div class="big">HOST</div><div class="small">Create a party &amp; run the show</div></button>
       <button class="choice alt" data-act="go-join"><div class="big">JOIN</div><div class="small">Enter a party code</div></button>
     </div>
-    <p class="note" style="margin-top:26px;text-align:center">2–8 players (bots welcome) · 2 teams · 3 rounds · one host runs the board</p>
+    <p class="note" style="margin-top:26px;text-align:center">2–8 players (bots welcome) · 2 teams · 3 rounds: ×1, ×2, ×3 · one host runs the board</p>
   </section>
 
   <!-- HOST CREATE -->
@@ -396,6 +396,9 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 const pick = a => a.length ? a[Math.floor(Math.random() * a.length)] : null;
 const TEAM = ['TEAM 1', 'TEAM 2'];
+// Round setup: how many answers are on the board and the points multiplier
+const ROUND_SETUP = [{ count: 8, mult: 1 }, { count: 6, mult: 2 }, { count: 4, mult: 3 }];
+const MULT_NAME = { 1: 'SINGLE POINTS', 2: 'DOUBLE POINTS', 3: 'TRIPLE POINTS' };
 const TC = ['t1', 't2'];
 document.querySelectorAll('.js-title').forEach(e => e.textContent = GAME_TITLE);
 
@@ -652,9 +655,11 @@ const HOST = {
     need(s.phase === 'teams' || (s.phase === 'roundEnd' && s.awarded), 'Finish this round first');
     need(s.round < s.totalRounds, 'All rounds played');
     resetRoundFields(s); s.round++;
+    const setup = ROUND_SETUP[Math.min(s.round, ROUND_SETUP.length) - 1]; s.mult = setup.mult;
+    q = { ...q, answers: q.answers.slice(0, setup.count) };
     s.question = { words: [], total: q.question.trim().split(/\s+/).length, slots: q.answers.map(() => ({ revealed: false })) };
     s.contestants = [pick(liveIds(s, 0)), pick(liveIds(s, 1))];
-    s.phase = 'faceoff'; fx(s, 'round', { round: s.round });
+    s.phase = 'faceoff'; fx(s, 'round', { round: s.round, mult: s.mult, count: s.question.slots.length });
   },
   newContestants(s) {
     need(s.phase === 'faceoff' && s.buzzer.state !== 'done', 'Buzz already happened');
@@ -678,7 +683,7 @@ const HOST = {
     Object.assign(slot, { revealed: true, text: ans[i].text, points: ans[i].points });
     if (s.activeSlot === i) s.activeSlot = -1;
     if (s.phase === 'roundEnd') return;               // showing leftovers — no points
-    s.bank += ans[i].points; s.submission = null;
+    s.bank += ans[i].points * (s.mult || 1); s.submission = null;
     const turnTeam = s.turn ? teamOf(s, s.turn.playerId) : null;
     if (s.phase === 'faceoff') {
       const t = turnTeam ?? (s.buzzer.winner ? s.buzzer.winner.team : null); need(t != null, 'No contestant to credit');
@@ -762,9 +767,11 @@ async function act(name, ...args) {
 async function startRound() {
   if (busy) return; busy = true;
   let q;
-  try { q = await API.rpc('ff_host_new_question', { p_code: SESSION.code, p_secret: SESSION.secret }); }
+  const setup = ROUND_SETUP[Math.min(S.round, ROUND_SETUP.length - 1)];
+  try { q = await API.rpc('ff_host_new_question', { p_code: SESSION.code, p_secret: SESSION.secret, p_count: setup.count }); }
   catch (e) { toast(e.message); busy = false; return; }
   busy = false;
+  q.answers = q.answers.slice(0, setup.count);
   P = Object.assign(P || {}, { answers: q.answers, question: q.question, decoys: q.decoys || [], pending: null });
   hostSel = -1; lastActive = -1;
   await act('beginRound', q);
@@ -864,7 +871,7 @@ function render() {
   syncMute();
   if (!isHost() && !me() && S.phase === 'lobby') return kicked();
   const ph = S.phase;
-  $('#round-pill').textContent = ph === 'lobby' ? 'LOBBY' : ph === 'teams' ? 'TEAMS' : ph === 'gameOver' ? 'FINAL' : `ROUND ${S.round} / ${S.totalRounds}`;
+  $('#round-pill').textContent = ph === 'lobby' ? 'LOBBY' : ph === 'teams' ? 'TEAMS' : ph === 'gameOver' ? 'FINAL' : `ROUND ${S.round}/${S.totalRounds}${S.mult > 1 ? ' · ×' + S.mult : ''}`;
   const inLobby = ph === 'lobby' || ph === 'closed';
   $('#view-lobby').classList.toggle('hidden', !inLobby);
   $('#view-board').classList.toggle('hidden', inLobby);
@@ -917,10 +924,10 @@ function renderScores() {
   const team = t => `<div class="team-score ${TC[t]} ${s.control === t && ['play', 'stealReady', 'steal'].includes(s.phase) ? 'control' : ''}" id="ts${t}">
       ${s.control === t && ['play', 'stealReady', 'steal'].includes(s.phase) ? '<div class="ctrl-tag">CONTROL</div>' : ''}
       <div class="tname">${TEAM[t]}</div><div class="tpts" data-v="${s.scores[t]}">${s.scores[t]}</div></div>`;
-  const key = JSON.stringify([s.scores, s.bank, s.strikes, s.control, s.phase]);
+  const key = JSON.stringify([s.scores, s.bank, s.strikes, s.control, s.phase, s.mult]);
   if (el.dataset.key === key) return; el.dataset.key = key;
   const old = prevScores;
-  el.innerHTML = `${team(0)}<div class="pot"><div class="lbl">ROUND POT</div><div class="val">${s.bank || 0}</div><div class="strikes">${strikes}</div></div>${team(1)}`;
+  el.innerHTML = `${team(0)}<div class="pot"><div class="lbl">${s.mult > 1 ? 'POT · ×' + s.mult : 'ROUND POT'}</div><div class="val">${s.bank || 0}</div><div class="strikes">${strikes}</div></div>${team(1)}`;
   if (old) [0, 1].forEach(t => { if (s.scores[t] > old[t]) { countUp($(`#ts${t} .tpts`), old[t], s.scores[t]); $(`#ts${t}`).classList.add('bump'); } });
   prevScores = s.scores.slice();
 }
@@ -975,7 +982,7 @@ function turnText() {
       const sec = s.buzzer.second ? ` · ${esc(pname(s, s.buzzer.second.id))} was ${(s.buzzer.second.delta / 1000).toFixed(2)}s behind` : '';
       return s.turn ? `${nm(s.turn.playerId)} IS ANSWERING<span class="sub">Face-off for control of the board${sec}</span>` : `FACE-OFF`;
     }
-    case 'play': return s.turn ? `${TEAM[s.control]} · ${nm(s.turn.playerId)}'S TURN<span class="sub">Strikes: ${s.strikes}/3</span>` : `${TEAM[s.control]} HAS CONTROL<span class="sub">Host is running the board</span>`;
+    case 'play': return s.turn ? `${TEAM[s.control]} · ${nm(s.turn.playerId)}'S TURN<span class="sub">Strikes: ${s.strikes}/3${s.mult > 1 ? ' · ' + MULT_NAME[s.mult] : ''}</span>` : `${TEAM[s.control]} HAS CONTROL<span class="sub">Host is running the board</span>`;
     case 'stealReady': return `❌❌❌ THREE STRIKES!<span class="sub">${TEAM[1 - s.control]} gets ONE chance to steal</span>`;
     case 'steal': return `<span class="${TC[s.steal.team]}c">${TEAM[s.steal.team]}</span> IS TRYING TO STEAL!<span class="sub">${s.turn ? esc(pname(s, s.turn.playerId)) + ' gives the answer' : 'Team huddle — host takes the answer'}</span>`;
     case 'roundEnd': {
@@ -1066,7 +1073,7 @@ function renderHostPanel() {
       break;
     case 'faceoff':
       if (s.buzzer.state === 'locked') {
-        status = `Face-off: <b>${esc(pname(s, s.contestants[0]))}</b> (Team 1) vs <b>${esc(pname(s, s.contestants[1]))}</b> (Team 2). Reveal the question word by word — unlock the buzzers whenever you're ready.`;
+        status = `<b>${MULT_NAME[s.mult || 1]}</b> · ${s.question.slots.length} answers<br>Face-off: <b>${esc(pname(s, s.contestants[0]))}</b> (Team 1) vs <b>${esc(pname(s, s.contestants[1]))}</b> (Team 2). Reveal the question word by word — unlock the buzzers whenever you're ready.`;
         btns = B('unlock', '🔓 UNLOCK BUZZERS', 'wide pulse') + B('new-contestants', '🎲 NEW CONTESTANTS', 'purple wide');
       } else if (s.buzzer.state === 'open') {
         status = '⚡ Buzzers are LIVE — waiting for a press…';
@@ -1175,7 +1182,7 @@ function handleFx() {
   switch (s.fx.type) {
     case 'join': SFX.blip(); break;
     case 'teams': SFX.fanfare(); Confetti.burst(80); break;
-    case 'round': SFX.whoosh(); SFX.fanfare(); banner('GET READY', `ROUND ${d.round}`, `${s.contestants.filter(Boolean).map(id => esc(pname(s, id))).join(' vs ')} to the buzzers!`); break;
+    case 'round': SFX.whoosh(); SFX.fanfare(); banner(`ROUND ${d.round} · ${MULT_NAME[d.mult || 1]}`, `ROUND ${d.round}`, `${d.count || ''} answers on the board · ${s.contestants.filter(Boolean).map(id => esc(pname(s, id))).join(' vs ')} to the buzzers!`, d.mult === 3 ? 'bad' : ''); break;
     case 'unlock': SFX.unlock(); break;
     case 'contestants': SFX.blip(); break;
     case 'buzz': SFX.buzz(); banner('⚡ BUZZED IN FIRST ⚡', esc(d.name).toUpperCase(), TEAM[d.team] || '', TC[d.team]); if (navigator.vibrate) navigator.vibrate(200); break;
